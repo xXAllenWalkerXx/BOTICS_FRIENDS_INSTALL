@@ -10,7 +10,8 @@ SSH_PORT="${BOTICS_SSH_PORT:-22}"
 MASTER_IP="${BOTICS_MASTER_IP:-}"
 INBOUND_PORTS="${BOTICS_INBOUND_PORTS:-}"
 ENABLE_UFW="${BOTICS_ENABLE_UFW:-1}"
-SSL_MODE="${BOTICS_XUI_SSL_MODE:-ip}"
+SSL_MODE="${BOTICS_XUI_SSL_MODE:-domain}"
+XUI_DOMAIN="${BOTICS_XUI_DOMAIN:-}"
 INSTALL_URL="https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_VERSION}/install.sh"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -24,11 +25,22 @@ valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( "$1" >= 1 && "$1" <= 65535 )); }
 valid_port "$PANEL_PORT" || die "BOTICS_PANEL_PORT must be between 1 and 65535"
 valid_port "$SSH_PORT" || die "BOTICS_SSH_PORT must be between 1 and 65535"
 [[ "$SSL_MODE" == "ip" || "$SSL_MODE" == "domain" || "$SSL_MODE" == "none" ]] || die "BOTICS_XUI_SSL_MODE must be ip, domain, or none"
-[[ "$SSL_MODE" != "domain" || -n "${BOTICS_XUI_DOMAIN:-}" ]] || die "BOTICS_XUI_DOMAIN is required for domain SSL mode"
+[[ "$SSL_MODE" != "domain" || -n "$XUI_DOMAIN" ]] || die "BOTICS_XUI_DOMAIN is required (for example: node1.example.com)"
+[[ -z "$XUI_DOMAIN" || "$XUI_DOMAIN" != *"://"* ]] || die "BOTICS_XUI_DOMAIN must not contain http:// or https://"
+[[ -z "$XUI_DOMAIN" || "$XUI_DOMAIN" != */* ]] || die "BOTICS_XUI_DOMAIN must contain only a hostname, without a path"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl ufw
+
+if [[ "$SSL_MODE" == "domain" ]]; then
+    public_ip="$(curl --fail --silent --show-error --ipv4 --max-time 15 https://api.ipify.org)" || die "cannot determine this server's public IPv4 address"
+    mapfile -t domain_ips < <(getent ahostsv4 "$XUI_DOMAIN" | awk '{print $1}' | sort -u)
+    (( ${#domain_ips[@]} > 0 )) || die "$XUI_DOMAIN has no public A record yet"
+    printf 'Server public IPv4: %s\n' "$public_ip"
+    printf '%s A record(s): %s\n' "$XUI_DOMAIN" "${domain_ips[*]}"
+    [[ " ${domain_ips[*]} " == *" $public_ip "* ]] || die "$XUI_DOMAIN does not point to this server ($public_ip)"
+fi
 
 if ! command -v x-ui >/dev/null 2>&1 && [[ ! -x /usr/local/x-ui/x-ui ]]; then
     installer="$(mktemp /tmp/botics-xui-install.XXXXXX)"
@@ -38,8 +50,8 @@ if ! command -v x-ui >/dev/null 2>&1 && [[ ! -x /usr/local/x-ui/x-ui ]]; then
     export XUI_NONINTERACTIVE=1
     export XUI_PANEL_PORT="$PANEL_PORT"
     export XUI_SSL_MODE="$SSL_MODE"
-    if [[ -n "${BOTICS_XUI_DOMAIN:-}" ]]; then
-        export XUI_DOMAIN="$BOTICS_XUI_DOMAIN"
+    if [[ -n "$XUI_DOMAIN" ]]; then
+        export XUI_DOMAIN
     fi
     bash "$installer" "$XUI_VERSION"
 else
